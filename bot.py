@@ -1,12 +1,9 @@
 import os
-import re
 import json
 import time
 import asyncio
-import logging
 from pathlib import Path
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,24 +13,16 @@ from telegram.ext import (
     CallbackQueryHandler,
     ConversationHandler,
     MessageHandler,
-    filters
+    filters,
 )
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from telethon.errors import SessionPasswordNeededError
 
-# Configuração inicial
+# Configurações iniciais
 load_dotenv()
 CACHE_DIR = Path('cache')
 CACHE_DIR.mkdir(exist_ok=True)
-CACHE_TTL = 3600
-
-# Configuração de logging
-logger = logging.getLogger(__name__)
-handler = RotatingFileHandler('bot.log', maxBytes=1e6, backupCount=3)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+CACHE_TTL = 3600  # 1 hora em segundos
 
 # Variáveis de ambiente
 API_ID = os.getenv('API_ID')
@@ -42,16 +31,17 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 YOUR_PHONE = os.getenv('YOUR_PHONE')
 
 if not all([API_ID, API_HASH, BOT_TOKEN, YOUR_PHONE]):
-    raise ValueError("Defina todas as variáveis de ambiente necessárias.")
+    raise ValueError("Defina todas as variáveis de ambiente: API_ID, API_HASH, BOT_TOKEN, YOUR_PHONE.")
 
 client = TelegramClient('session_name', API_ID, API_HASH)
 
 # Estados da conversação
-LINK, INTERVAL = range(2)
+LINK, INTERVAL, REFERRAL = range(3)
 
-# Estruturas de dados
+# Configurações e controle
 settings = {
     'message_link': None,
+    'referral_link': None,
     'user_id': None,
 }
 
@@ -61,47 +51,25 @@ statistics = {
 }
 
 group_list = []
-active_campaigns = {}
+active_campaigns = {}  # {user_id: {'job': job, 'start_time': timestamp}}
 
-# Funções auxiliares
-def is_valid_message_link(link: str) -> bool:
-    pattern = r"https://t\.me/[a-zA-Z0-9_]+/\d+"
-    return re.match(pattern, link) is not None
-
-def is_valid_interval(interval: int) -> bool:
-    return 1 <= interval <= 1440
-
-def save_state():
-    data = {
-        'active_campaigns': {
-            uid: {k: v for k, v in data.items() if k != 'job'}
-            for uid, data in active_campaigns.items()
-        },
-        'statistics': statistics,
-        'settings': settings
-    }
-    with open('bot_state.json', 'w') as f:
-        json.dump(data, f, default=str)
-
-def load_state():
-    try:
-        with open('bot_state.json', 'r') as f:
-            data = json.load(f)
-            active_campaigns.update(data.get('active_campaigns', {}))
-            statistics.update(data.get('statistics', {}))
-            settings.update(data.get('settings', {}))
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+# Função para verificar campanhas ativas
+def has_active_campaign(user_id):
+    return user_id in active_campaigns and active_campaigns[user_id]['job'] is not None
 
 # Autenticação
 async def authenticate():
-    await client.start(phone=YOUR_PHONE)
+    await client.start()
     if not await client.is_user_authorized():
-        await client.send_code_request(YOUR_PHONE)
-        await client.sign_in(YOUR_PHONE, input('Código recebido: '))
-    logger.info("Autenticação concluída com sucesso.")
+        try:
+            await client.send_code_request(YOUR_PHONE)
+            code = input('Código recebido: ')
+            await client.sign_in(YOUR_PHONE, code)
+        except SessionPasswordNeededError:
+            password = input('Senha: ')
+            await client.sign_in(password=password)
 
-# Cache de participantes
+# Cache de participantes em arquivo
 async def get_participant_ids(group):
     cache_file = CACHE_DIR / f"{group.id}.json"
     try:
@@ -111,7 +79,7 @@ async def get_participant_ids(group):
                 with open(cache_file, 'r') as f:
                     return set(json.load(f))
     except Exception as e:
-        logger.error(f"Erro no cache: {e}")
+        print(f"Erro ao ler cache: {e}")
 
     try:
         participants = await client.get_participants(group)
@@ -120,26 +88,16 @@ async def get_participant_ids(group):
             json.dump(list(participant_ids), f)
         return participant_ids
     except Exception as e:
-        logger.error(f"Erro ao atualizar cache: {e}")
+        print(f"Erro ao atualizar cache: {e}")
         return set()
 
-# Atualização automática de grupos
-async def refresh_groups():
-    while True:
-        try:
-            await preload_groups()
-            logger.info("Lista de grupos atualizada")
-            await asyncio.sleep(3600)
-        except Exception as e:
-            logger.error(f"Erro na atualização de grupos: {e}")
-            await asyncio.sleep(600)
-
+# Pré-carregar grupos
 async def preload_groups():
     group_list.clear()
     async for dialog in client.iter_dialogs():
         if dialog.is_group and not dialog.archived:
             group_list.append(dialog.entity)
-    logger.info(f"Grupos pré-carregados: {len(group_list)}")
+    print(f"Grupos pré-carregados: {len(group_list)}")
 
 # Encaminhamento de mensagens
 async def forward_message_with_formatting(context: ContextTypes.DEFAULT_TYPE):
@@ -151,190 +109,181 @@ async def forward_message_with_formatting(context: ContextTypes.DEFAULT_TYPE):
         parts = settings['message_link'].split('/')
         message = await client.get_messages(parts[-2], ids=int(parts[-1]))
         me = await client.get_me()
-        success_count = 0
+        tasks = []
 
-        for i, group in enumerate(group_list):
-            try:
-                if me.id in await get_participant_ids(group):
-                    await client.forward_messages(group, message)
-                    success_count += 1
-                    statistics['messages_sent'] += 1
-                    
-                    if (i + 1) % 20 == 0:
-                        await asyncio.sleep(10)
-                        
-            except FloodWaitError as fwe:
-                logger.warning(f"FloodWait: Esperando {fwe.seconds} segundos")
-                await asyncio.sleep(fwe.seconds)
-            except Exception as e:
-                logger.error(f"Erro no envio para grupo {group.id}: {e}")
+        for group in group_list:
+            if me.id in await get_participant_ids(group):
+                tasks.append(client.forward_messages(group, message))
 
-        logger.info(f"Mensagens enviadas: {success_count}/{len(group_list)}")
-        
+        if tasks:
+            await asyncio.gather(*tasks)
+            statistics['messages_sent'] += len(tasks)
+            print(f"Mensagens encaminhadas: {len (tasks)}")
+
     except Exception as e:
-        logger.error(f"Erro geral no encaminhamento: {e}")
+        print(f"Erro no encaminhamento: {e}")
     finally:
-        logger.info(f"Tempo de execução: {time.time() - start_time:.2f}s")
-        save_state()
+        print(f"Tempo de execução: {time.time() - start_time:.2f}s")
 
 # Gestão de jobs
 def manage_jobs(job_queue, user_id, interval):
-    if user_id in active_campaigns:
+    # Remove qualquer job existente para o usuário
+    if has_active_campaign(user_id):
         active_campaigns[user_id]['job'].schedule_removal()
         del active_campaigns[user_id]
 
+    # Cria novo job
     job = job_queue.run_repeating(
         forward_message_with_formatting,
         interval=interval * 60,
         first=0
     )
-    
+
+    # Registra a campanha
     active_campaigns[user_id] = {
         'job': job,
         'start_time': time.time(),
         'interval': interval
     }
-    
+
     statistics['active_campaigns'] = len(active_campaigns)
-    save_state()
 
-# Handlers do Telegram
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    now = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-    
-    welcome_msg = (
-        f"🚀 BOT DE MARKETING AUTOMATIZADO 🚀\n\n"
-        f"📅 Início: {now}\n"
-        f"🆔 Seu ID: {user_id}\n\n"
-        "Selecione uma opção:"
-    )
-
-    keyboard = [
-        [InlineKeyboardButton("🚀 INICIAR CAMPANHA", callback_data='create_campaign')],
-        [InlineKeyboardButton("🛑 PARAR CAMPANHA", callback_data='cancel_campaign')],
-        [InlineKeyboardButton("📊 ESTATÍSTICAS", callback_data='statistics')],
+# Função para limpar jobs finalizados
+async def cleanup_jobs(context: ContextTypes.DEFAULT_TYPE):
+    now = time.time()
+    expired_users = [
+        user_id for user_id, data in active_campaigns.items()
+        if now - data['start_time'] > (data['interval'] * 60 * 10)  # 10 ciclos
     ]
 
-    await update.message.reply_text(welcome_msg, reply_markup=InlineKeyboardMarkup(keyboard))
+    for user_id in expired_users:
+        active_campaigns[user_id]['job'].schedule_removal()
+        del active_campaigns[user_id]
 
+    if expired_users:
+        statistics['active_campaigns'] = len(active_campaigns)
+        print(f"Limpeza automática: {len(expired_users)} campanhas expiradas removidas")
+
+# Handlers do Telegram
 async def start_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    if user_id in active_campaigns:
+
+    if has_active_campaign(user_id):
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            "⚠️ Você já tem uma campanha ativa!",
+            "⚠️ Você já tem uma campanha ativa! Cancele a atual antes de iniciar uma nova.",
             show_alert=True
         )
         return ConversationHandler.END
-        
+
     await update.callback_query.answer()
     await update.callback_query.edit_message_text('Envie o link da mensagem:')
     return LINK
 
 async def set_message_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = update.message.text
-    if not is_valid_message_link(link):
-        await update.message.reply_text("❌ Link inválido! Formato correto: https://t.me/grupo/123")
-        return LINK
-    
-    settings['message_link'] = link
-    await update.message.reply_text("✅ Link salvo! Agora envie o intervalo em minutos (1-1440):")
+    settings['message_link'] = update.message.text
+    await update.message.reply_text("Link salvo! Agora envie o intervalo em minutos:")
     return INTERVAL
 
 async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         interval = int(update.message.text)
-        if not is_valid_interval(interval):
-            raise ValueError
-            
         user_id = update.effective_user.id
         await preload_groups()
         manage_jobs(context.application.job_queue, user_id, interval)
-        await update.message.reply_text(f"✅ Campanha iniciada! Intervalo: {interval} minutos")
-        logger.info(f"Nova campanha: User {user_id}, Intervalo {interval}min")
-        return ConversationHandler.END
-        
+        await update.message.reply_text(f"✅ Campanha iniciada com intervalo de {interval} minutos")
     except ValueError:
-        await update.message.reply_text("❌ Intervalo inválido! Use números entre 1 e 1440.")
+        await update.message.reply_text("⚠️ Formato inválido! Use números inteiros.")
         return INTERVAL
+    return ConversationHandler.END
 
 async def cancel_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    if user_id not in active_campaigns:
+
+    if not has_active_campaign(user_id):
         await update.callback_query.answer()
         await update.callback_query.message.edit_text("❌ Nenhuma campanha ativa para cancelar.")
         return
 
+    # Remove o job e limpa os dados
     active_campaigns[user_id]['job'].schedule_removal()
     del active_campaigns[user_id]
-    
+
     statistics['active_campaigns'] = len(active_campaigns)
     await update.callback_query.answer()
     await update.callback_query.message.edit_text("✅ Campanha cancelada com sucesso!")
-    save_state()
-
-async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    stats_message = (
-        "📊 Estatísticas:\n"
-        f"• Mensagens enviadas: {statistics['messages_sent']}\n"
-        f"• Campanhas ativas: {statistics['active_campaigns']}"
-    )
-    await update.callback_query.message.reply_text(stats_message)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Operação cancelada.")
     return ConversationHandler.END
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    error = context.error
-    logger.error(f"Erro não tratado: {error}", exc_info=True)
-    
-    if update and update.message:
-        await update.message.reply_text("⚠️ Ocorreu um erro inesperado. Tente novamente mais tarde.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    now = datetime.now()
+    welcome_message = (
+        f"BEM-VINDO AO BOT!\n\n"
+        f"Data e Hora de Entrada: {now.strftime('%d/%m/%Y %H:%M:%S')}\n"
+        f"Seu ID: {user_id}\n"
+        "👉 Toque no botão abaixo para começar sua jornada!"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("🚀 INICIAR UMA NOVA CAMPANHA 🚀", callback_data='create_campaign')],
+        [InlineKeyboardButton("🛑 CANCELAR CAMPANHA 🛑", callback_data='cancel_campaign')],
+        [InlineKeyboardButton("📊 VER ESTATÍSTICAS DO BOT 📊", callback_data='statistics')],
+        [InlineKeyboardButton("LINK DE REFERÊNCIA", callback_data='referral')],
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+    except Exception as e:
+        print(f"Erro ao enviar mensagem: {e}")
+        await update.message.reply_text("Desculpe, ocorreu um erro ao tentar enviar a mensagem.")
+
+async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    stats_message = (
+        "Estatísticas do Bot:\n"
+        f"Mensagens enviadas: {statistics['messages_sent']}\n"
+        f"Campanhas ativas: {statistics['active_campaigns']}\n"
+    )
+    await update.callback_query.message.reply_text(stats_message)
+
+async def set_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    user_id = update.callback_query.from_user.id
+    settings['referral_link'] = f"https://t.me/MEIA_GIL_BOT?start=ref_{user_id}"
+    await update.callback_query.message.reply_text(f"Seu link de referência: {settings['referral_link']}")
 
 def main():
-    load_state()
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = asyncio.get_event_loop()
 
     try:
         loop.run_until_complete(authenticate())
-        loop.create_task(refresh_groups())
-        
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-        application.add_error_handler(error_handler)
+        print("BOT CONECTADO")
 
-        # Handlers
-        conv_handler = ConversationHandler(
+        application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+        campaign_handler = ConversationHandler(
             entry_points=[CallbackQueryHandler(start_campaign, pattern='create_campaign')],
             states={
                 LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_message_link)],
                 INTERVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_interval)],
             },
-            fallbacks=[CommandHandler('cancel', cancel)]
+            fallbacks=[CommandHandler('cancel', cancel)],
         )
 
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CallbackQueryHandler(show_statistics, pattern='statistics'))
+        application.add_handler(CallbackQueryHandler(set_referral_link, pattern='referral'))
         application.add_handler(CallbackQueryHandler(cancel_campaign, pattern='cancel_campaign'))
-        application.add_handler(conv_handler)
-
-        # Recriar jobs ativos
-        for user_id, data in active_campaigns.items():
-            manage_jobs(application.job_queue, user_id, data['interval'])
-            logger.info(f"Campanha recarregada: User {user_id}, Intervalo {data['interval']}min")
+        application.add_handler(campaign_handler)
 
         application.run_polling()
-        
     finally:
-        if client.is_connected():
-            loop.run_until_complete(client.disconnect())
-        save_state()
+        loop.run_until_complete(client.disconnect())
         loop.close()
 
 if __name__ == '__main__':
