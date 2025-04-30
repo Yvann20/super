@@ -17,6 +17,7 @@ from telegram.ext import (
 )
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
+from telethon.tl.types import ChannelParticipantsAdmins
 from prometheus_client import start_http_server, Counter, Gauge
 import re
 
@@ -107,6 +108,16 @@ async def preload_groups():
             group_list.append(dialog.entity)
     print(f"Grupos pré-carregados: {len(group_list)}")
 
+# Função para verificar se o usuário é administrador em um grupo
+async def is_user_admin_in_group(group, user_id):
+    try:
+        participants = await client.get_participants(group, filter=ChannelParticipantsAdmins)
+        admin_ids = {p.id for p in participants}
+        return user_id in admin_ids
+    except Exception as e:
+        print(f"Erro ao verificar administradores: {e}")
+        return False
+
 # Encaminhamento de mensagens
 async def forward_message_with_formatting(context: ContextTypes.DEFAULT_TYPE):
     start_time = time.time()
@@ -120,11 +131,11 @@ async def forward_message_with_formatting(context: ContextTypes.DEFAULT_TYPE):
         tasks = []
 
         for group in group_list:
-            if me.id in await get_participant_ids(group):
+            if await is_user_admin_in_group(group, me.id):
                 tasks.append(client.forward_messages(group, message))
 
         if tasks:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(* tasks)
             statistics['messages_sent'] += len(tasks)
             messages_sent_counter.inc(len(tasks))
             print(f"Mensagens encaminhadas: {len(tasks)}")
@@ -244,7 +255,7 @@ async def cancel_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_campaigns[user_id]['job'].schedule_removal()
     del active_campaigns[user_id]
     statistics['active_campaigns'] = len(active_campaigns)
-    active_campaigns_gauge.dec()  # Use o método dec() para decrementar o contador
+    active_campaigns_gauge.dec()  # Use o método dec () para decrementar o contador
     await update.callback_query.answer()
     await update.callback_query.message.edit_text("✅ Campanha cancelada com sucesso!")
 
@@ -287,7 +298,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.message.reply_text(stats_message)
 
 def main():
-    start_http_server(8005)  # Inicia o servidor de métricas
+    start_http_server(8995)  # Inicia o servidor de métricas
     loop = asyncio.get_event_loop()
 
     try:
