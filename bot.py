@@ -298,7 +298,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.message.reply_text(stats_message)
 
 def main():
-    start_http_server(8995)  # Inicia o servidor de métricas
+    start_http_server(8245)  # Inicia o servidor de métricas
     loop = asyncio.get_event_loop()
 
     try:
