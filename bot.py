@@ -37,7 +37,7 @@ YOUR_PHONE = os.environ.get('YOUR_PHONE')
 if not all([API_ID, API_HASH, BOT_TOKEN, YOUR_PHONE]):
     raise ValueError("Defina todas as variáveis de ambiente: API_ID, API_HASH, BOT_TOKEN, YOUR_PHONE.")
 
-client = TelegramClient('session_name', API_ID, API_HASH)
+client = TelegramClient('+5562985551922', API_ID, API_HASH)
 
 # Estados da conversação
 LINK, INTERVAL, FEEDBACK = range(3)
