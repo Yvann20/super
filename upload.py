@@ -4,7 +4,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 # Diretório onde o script está sendo executado
 UPLOAD_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
-BOT_TOKEN = '7319901594:AAFOEbsibwQLt_iVkkCJAQQIrLrNfG7Mj9Y'  # Substitua pelo seu token
+BOT_TOKEN = '7816694561:AAHyDveY-XnNVj6vTREJ_s4bXBRPd5oQ7is'  # Substitua pelo seu token
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Olá! Envie o arquivo que deseja fazer upload para a VPS.")
