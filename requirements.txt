@@ -1,0 +1,31 @@
+#!/bin/bash
+
+echo "=============================="
+echo " Atualizando o sistema..."
+echo "=============================="
+sudo apt update && sudo apt upgrade -y
+
+echo "=============================="
+echo " Instalando dependências do sistema..."
+echo "=============================="
+sudo apt install python3 python3-pip python3-venv git -y
+
+echo "=============================="
+echo " Criando ambiente virtual..."
+echo "=============================="
+python3 -m venv venv
+source venv/bin/activate
+
+echo "=============================="
+echo " Instalando bibliotecas Python..."
+echo "=============================="
+pip install --upgrade pip
+pip install python-telegram-bot[job-queue]
+pip install python-telegram-bot --upgrade
+pip install python-dotenv
+pip install prometheus-client
+pip install telethon
+
+echo "=============================="
+echo " Instalação concluída com sucesso!"
+echo "=============================="
