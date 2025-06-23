@@ -37,7 +37,7 @@ YOUR_PHONE = os.environ.get('YOUR_PHONE')
 if not all([API_ID, API_HASH, BOT_TOKEN, YOUR_PHONE]):
     raise ValueError("Defina todas as variáveis de ambiente: API_ID, API_HASH, BOT_TOKEN, YOUR_PHONE.")
 
-client = TelegramClient('+5562985551922', API_ID, API_HASH)
+client = TelegramClient('session_name', API_ID, API_HASH)
 
 # Estados da conversação
 LINK, INTERVAL, FEEDBACK = range(3)
@@ -298,7 +298,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.message.reply_text(stats_message)
 
 def main():
-    start_http_server(8245)  # Inicia o servidor de métricas
+    start_http_server(2222)  # Inicia o servidor de métricas
     loop = asyncio.get_event_loop()
 
     try:
